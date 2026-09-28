@@ -1,0 +1,1 @@
+{"name":"@openreview/worker","type":"module","scripts":{"start":"tsx src/index.ts","build":"tsc --noEmit","test":"vitest run --passWithNoTests"},"dependencies":{"@openreview/engine":"workspace:*","@octokit/app":"^16.0.0","@octokit/rest":"^22.0.0","convex":"^1.27.0"},"devDependencies":{"@types/node":"^24.0.0"}}

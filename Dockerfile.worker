@@ -1,0 +1,11 @@
+FROM node:24-bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends git ripgrep ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN corepack enable
+WORKDIR /app
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+COPY packages/engine/package.json packages/engine/package.json
+COPY apps/worker/package.json apps/worker/package.json
+RUN pnpm install --frozen-lockfile --config.dangerously-allow-all-builds=true
+COPY packages/engine packages/engine
+COPY apps/worker apps/worker
+CMD ["pnpm","--filter","@openreview/worker","start"]

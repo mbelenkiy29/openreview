@@ -1,0 +1,13 @@
+mode: economy
+drafts: false
+ignore:
+  - '**/dist/**'
+  - '**/node_modules/**'
+severityThreshold: medium
+commentLimit: 5
+budgetUsd: 1
+context:
+  maxFiles: 60
+  maxBytesPerFile: 60000
+  maxInputTokens: 24000
+  maxOutputTokens: 2500

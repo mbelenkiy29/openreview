@@ -1,0 +1,9 @@
+{
+  "name": "OpenReview",
+  "url": "https://YOUR_DASHBOARD_DOMAIN",
+  "hook_attributes": {"url": "https://YOUR_CONVEX_SITE_DOMAIN/github/webhook", "active": true},
+  "redirect_url": "https://YOUR_DASHBOARD_DOMAIN",
+  "public": false,
+  "default_permissions": {"contents": "read", "pull_requests": "write"},
+  "default_events": ["pull_request"]
+}

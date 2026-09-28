@@ -1,0 +1,17 @@
+FROM node:24-bookworm-slim AS builder
+ENV NEXT_TELEMETRY_DISABLED=1
+RUN corepack enable
+WORKDIR /app
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+COPY apps/web/package.json apps/web/package.json
+RUN pnpm install --frozen-lockfile --config.dangerously-allow-all-builds=true
+COPY tsconfig.json ./
+COPY apps/web apps/web
+RUN pnpm --filter @openreview/web build
+FROM node:24-bookworm-slim
+ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1
+RUN corepack enable
+WORKDIR /app
+COPY --from=builder /app /app
+EXPOSE 3000
+CMD ["pnpm","--filter","@openreview/web","start"]
