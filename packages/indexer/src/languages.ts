@@ -4,8 +4,8 @@ export type LanguageId='typescript'|'tsx'|'javascript'|'python'|'go'|'java'|'rus
 export type LanguageSpec={id:LanguageId;wasm:string;extensions:string[];defs:string;refs:string;imports:string};
 
 const jsRefs=`
-(call_expression function: [(identifier) @ref (member_expression property: (property_identifier) @ref)])
-(new_expression constructor: [(identifier) @ref (member_expression property: (property_identifier) @ref)])`;
+(call_expression function: [(identifier) @ref (member_expression property: (property_identifier) @ref.member)])
+(new_expression constructor: [(identifier) @ref (member_expression property: (property_identifier) @ref.member)])`;
 const jsImports=`
 (import_statement source: (string (string_fragment) @source))
 (export_statement source: (string (string_fragment) @source))
@@ -38,7 +38,7 @@ export const LANGUAGES:LanguageSpec[]=[
 (function_definition name: (identifier) @name) @def.function
 (class_definition name: (identifier) @name) @def.class
 (module (expression_statement (assignment left: (identifier) @name)) @def.variable)`,
-    refs:`(call function: [(identifier) @ref (attribute attribute: (identifier) @ref)])
+    refs:`(call function: [(identifier) @ref (attribute attribute: (identifier) @ref.member)])
 (class_definition superclasses: (argument_list (identifier) @ref))
 (type (identifier) @ref)`,
     imports:`
@@ -50,7 +50,7 @@ export const LANGUAGES:LanguageSpec[]=[
 (function_declaration name: (identifier) @name) @def.function
 (method_declaration name: (field_identifier) @name) @def.method
 (type_spec name: (type_identifier) @name) @def.type`,
-    refs:`(call_expression function: [(identifier) @ref (selector_expression field: (field_identifier) @ref)])
+    refs:`(call_expression function: [(identifier) @ref (selector_expression field: (field_identifier) @ref.member)])
 (type_identifier) @ref`,
     imports:`(import_spec path: (interpreted_string_literal) @source)`},
   {id:'java',wasm:'tree-sitter-java.wasm',extensions:['.java'],
@@ -73,7 +73,7 @@ export const LANGUAGES:LanguageSpec[]=[
 (enum_item name: (type_identifier) @name) @def.enum
 (trait_item name: (type_identifier) @name) @def.interface
 (type_item name: (type_identifier) @name) @def.type`,
-    refs:`(call_expression function: [(identifier) @ref (field_expression field: (field_identifier) @ref) (scoped_identifier name: (identifier) @ref)])
+    refs:`(call_expression function: [(identifier) @ref (field_expression field: (field_identifier) @ref.member) (scoped_identifier name: (identifier) @ref.qualified)])
 (macro_invocation macro: (identifier) @ref)
 (type_identifier) @ref`,
     imports:`(use_declaration argument: (_) @source)
@@ -96,7 +96,7 @@ export const LANGUAGES:LanguageSpec[]=[
 (enum_declaration name: (identifier) @name) @def.enum
 (method_declaration name: (identifier) @name) @def.method
 (constructor_declaration name: (identifier) @name) @def.method`,
-    refs:`(invocation_expression function: [(identifier) @ref (member_access_expression name: (identifier) @ref)])
+    refs:`(invocation_expression function: [(identifier) @ref (member_access_expression name: (identifier) @ref.member)])
 (object_creation_expression type: (identifier) @ref)
 (base_list (identifier) @ref)`,
     imports:`(using_directive [(qualified_name) (identifier)] @source)`},
@@ -107,8 +107,8 @@ export const LANGUAGES:LanguageSpec[]=[
 (class_declaration name: (name) @name) @def.class
 (interface_declaration name: (name) @name) @def.interface`,
     refs:`(function_call_expression function: (name) @ref)
-(member_call_expression name: (name) @ref)
-(scoped_call_expression name: (name) @ref)
+(member_call_expression name: (name) @ref.member)
+(scoped_call_expression name: (name) @ref.qualified)
 (object_creation_expression (name) @ref)`,
     imports:`(namespace_use_clause (qualified_name) @source)`},
   {id:'cpp',wasm:'tree-sitter-cpp.wasm',extensions:['.c','.h','.cc','.cpp','.cxx','.hpp','.hh'],
@@ -117,7 +117,7 @@ export const LANGUAGES:LanguageSpec[]=[
 (function_definition declarator: (function_declarator declarator: (qualified_identifier name: (identifier) @name))) @def.method
 (class_specifier name: (type_identifier) @name body: (_)) @def.class
 (struct_specifier name: (type_identifier) @name body: (_)) @def.class`,
-    refs:`(call_expression function: [(identifier) @ref (field_expression field: (field_identifier) @ref) (qualified_identifier name: (identifier) @ref)])
+    refs:`(call_expression function: [(identifier) @ref (field_expression field: (field_identifier) @ref.member) (qualified_identifier name: (identifier) @ref.qualified)])
 (type_identifier) @ref`,
     imports:`(preproc_include path: [(string_literal) (system_lib_string)] @source)`},
 ];

@@ -9,6 +9,17 @@ export type RetrieveOptions={budgetChars?:number;maxItems?:number;coChanged?:Map
 // Names too common to link by name alone; they still link through a resolved import.
 const GENERIC=new Set(['get','set','run','init','main','new','call','apply','bind','then','map','filter','reduce','push','pop','find','has','add','delete','update','create','save','load','read','write','open','close','start','stop','handle','handler','process','render','execute','constructor','__init__','toString','equals','hashCode','String','Error','Object','Promise','Array','Map','Set','len','print','println','format','log','test','it','describe','expect','require','value','data','id','name','type','key','error']);
 const MAX_SNIPPET_LINES=60;
+// Java and Ruby queries capture `obj.m()` and `m()` alike, so only the other languages can tell a bare call from a member call.
+const MEMBER_AWARE=new Set(['typescript','tsx','javascript','python','go','rust','csharp','php','cpp']);
+/**
+ * A property access (`obj.name()`) binds to a method, or to a free definition only through a direct import (`ns.name()`, `pkg.Name()`).
+ * A bare call (`name()`) binds to a method only in its own file (implicit receiver), in languages that mark member calls.
+ * A qualified call (`Type::name()`) binds to either.
+ */
+function bindable(graph:CodeGraph,from:string,ref:{member?:boolean;qualified?:boolean},c:{path:string;def:Definition;score:number}){
+  if(ref.qualified)return true;
+  if(ref.member)return c.def.kind==='method'||c.score>=0.95;
+  return c.def.kind!=='method'||c.path===from||!MEMBER_AWARE.has(graph.files.get(from)?.language??'')}
 type Candidate={path:string;kind:ContextKind;reason:string;line:number;score:number;def?:Definition};
 
 function innermost(defs:Definition[],line:number){let best:Definition|undefined;for(const d of defs)if(d.startLine<=line&&line<=d.endLine&&(!best||d.endLine-d.startLine<best.endLine-best.startLine))best=d;return best}
@@ -35,12 +46,15 @@ export async function retrieveContext(graph:CodeGraph,changes:ChangedFile[],opti
     if(!node||!change.addedLines.length)continue;const touched=changedDefinitions(node.defs,change.addedLines);
     for(const def of touched){const generic=GENERIC.has(def.name)||def.name.length<3;
       const callers=(graph.refsByName.get(def.name)??[]).filter(r=>!changedPaths.has(r.path)).map(r=>{const binding=graph.resolve(r.path,def.name),mine=binding.find(b=>b.path===change.path),best=binding[0];
-        const score=!mine?0:mine===best||mine.score===best.score?mine.score:mine.score*0.3;return {r,score}}).filter(x=>x.score>=(generic?0.9:0.3)).sort((a,b)=>b.score-a.score).slice(0,6);
+        const score=!mine||!bindable(graph,r.path,r.ref,mine)?0:mine===best||mine.score===best.score?mine.score:mine.score*0.3;return {r,score}}).filter(x=>x.score>=(generic?0.9:0.3)).sort((a,b)=>b.score-a.score).slice(0,6);
       for(const {r,score} of callers)candidates.push({path:r.path,kind:TEST_PATH.test(r.path)?'test':'caller',line:r.ref.line,score:score+(TEST_PATH.test(r.path)?0.05:0),reason:`${TEST_PATH.test(r.path)?'Test using':'Calls'} changed ${def.kind} ${def.name} (${change.path})`});}
     const ranges=touched.filter(d=>d.kind!=='class'||touched.length===1);
     const inside=node.refs.filter(r=>change.addedLines.includes(r.line)||ranges.some(d=>d.startLine<=r.line&&r.line<=d.endLine));
-    for(const name of new Set(inside.map(r=>r.name))){if(node.defs.some(d=>d.name===name))continue;const best=graph.resolve(change.path,name).find(c=>!changedPaths.has(c.path));
-      if(!best||best.score<0.4||((GENERIC.has(name)||name.length<3)&&best.score<0.9))continue;
+    const kinds=new Map<string,{name:string;member?:boolean;qualified?:boolean}>();for(const r of inside)kinds.set(`${r.name}:${r.member?'m':r.qualified?'q':''}`,r);
+    for(const ref of kinds.values()){const name=ref.name;if(node.defs.some(d=>d.name===name))continue;
+      // The best binding decides; when it is itself part of the change it is already in the diff, so a weaker binding elsewhere is not a substitute.
+      const best=graph.resolve(change.path,name).find(c=>bindable(graph,change.path,ref,c));
+      if(!best||changedPaths.has(best.path)||best.score<0.4||((GENERIC.has(name)||name.length<3)&&best.score<0.9))continue;
       candidates.push({path:best.path,kind:'callee',line:best.def.startLine,def:best.def,score:0.85*best.score,reason:`Definition of ${best.def.kind} ${name} used by changed code in ${change.path}`})}
     for(const importer of graph.importers.get(change.path)??[]){if(changedPaths.has(importer))continue;const isTest=TEST_PATH.test(importer);
       candidates.push({path:importer,kind:isTest?'test':'importer',line:1,score:isTest?0.5:0.25,reason:`${isTest?'Test importing':'Imports'} changed file ${change.path}`})}

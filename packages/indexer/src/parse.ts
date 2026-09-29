@@ -19,7 +19,11 @@ function treeSitter(){if(runtime)return runtime;const {createRequire}=process.ge
 
 export type DefKind='function'|'method'|'class'|'interface'|'type'|'enum'|'variable';
 export type Definition={name:string;kind:DefKind;startLine:number;endLine:number};
-export type Reference={name:string;line:number};
+/**
+ * `member` marks a property access (`obj.name()`, `pkg.Name()`): it binds to free definitions only through a direct import.
+ * `qualified` marks a path-qualified call (`Type::name()`, `ns::name()`), which may bind to methods and free definitions alike.
+ */
+export type Reference={name:string;line:number;member?:boolean;qualified?:boolean};
 export type ParsedFile={language:LanguageId;defs:Definition[];refs:Reference[];imports:string[]};
 
 type Loaded={parser:InstanceType<TreeSitter['Parser']>;defs:InstanceType<TreeSitter['Query']>;refs:InstanceType<TreeSitter['Query']>;imports:InstanceType<TreeSitter['Query']>};
@@ -46,9 +50,10 @@ export async function parseSource(path:string,source:string):Promise<ParsedFile|
       if(kind==='function'&&spec.id==='python'&&node.parent?.parent?.type==='class_definition')kind='method';
       const key=`${name.node.text}:${node.startPosition.row}`;if(seen.has(key))continue;seen.add(key);
       defs.push({name:name.node.text.replace(/^.*::/,''),kind,startLine:node.startPosition.row+1,endLine:node.endPosition.row+1})}
-    const defLines=new Set(defs.map(d=>`${d.name}:${d.startLine}`)),refs:Reference[]=[],refSeen=new Set<string>();
-    for(const c of l.refs.captures(root)){if(c.name!=='ref')continue;const name=c.node.text,line=c.node.startPosition.row+1,key=`${name}:${line}`;
-      if(refSeen.has(key)||defLines.has(key))continue;refSeen.add(key);refs.push({name,line})}
+    const defLines=new Set(defs.map(d=>`${d.name}:${d.startLine}`)),refs:Reference[]=[];
+    const refSeen=new Set<string>();
+    for(const c of l.refs.captures(root)){if(!/^ref(\.member|\.qualified)?$/.test(c.name))continue;const name=c.node.text,line=c.node.startPosition.row+1,key=`${name}:${line}`,seen=`${key}:${c.name}`;
+      if(defLines.has(key)||refSeen.has(seen))continue;refSeen.add(seen);refs.push(c.name==='ref.member'?{name,line,member:true}:c.name==='ref.qualified'?{name,line,qualified:true}:{name,line})}
     const imports=[...new Set(l.imports.captures(root).filter(c=>c.name==='source').map(c=>unquote(c.node.text)))];
     return {language:spec.id,defs,refs,imports};
   }finally{tree.delete()}

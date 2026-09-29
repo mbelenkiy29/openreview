@@ -27,6 +27,24 @@ describe('import resolution',()=>{
 });
 
 describe('graph retrieval',()=>{
+  it('binds method calls only to methods or direct imports, and never falls back past a changed binding',async()=>{
+    const f={
+      'lib/index.ts':"export * from './tar';\nexport * from './util';\n",
+      'lib/tar.ts':"function text(b: Uint8Array) { return String(b) }\nexport function readTar(b: Uint8Array) { return text(b) }\n",
+      'lib/util.ts':"export function git(...a: string[]) { return a.join(' ') }\n",
+      'app/util.ts':"export function git(...a: string[]) { return a }\n",
+      'lib/graph.ts':"export class Graph {\n  resolve(name: string) { return name }\n}\n",
+      'app/cli.ts':"import {resolve} from 'node:path';\nimport {Graph} from '../lib/graph';\nexport function out(p: string) {\n  return resolve(p) + new Graph().resolve(p);\n}\n",
+      'app/fetch.ts':"import {readTar} from '../lib/index';\nimport {git} from './util';\nexport async function get(res: Response) {\n  const body = await res.text();\n  git('x');\n  return readTar(new Uint8Array());\n}\n",
+    };const {dir,head}=await repo(f);const graph=await buildGraph(dir,head);
+    expect(graph.files.get('app/fetch.ts')!.refs.find(r=>r.name==='text')).toMatchObject({member:true});
+    const items=await retrieveContext(graph,[{path:'app/fetch.ts',addedLines:[4,5,6],after:f['app/fetch.ts']},{path:'app/util.ts',addedLines:[1],after:f['app/util.ts']},{path:'app/cli.ts',addedLines:[4],after:f['app/cli.ts']}]);
+    const reasons=items.map(i=>`${i.path} ${i.reason}`).join('\n');
+    // res.text() is not tar.ts's private text(); git() binds to the changed app/util.ts, not lib/util.ts.
+    expect(reasons).toContain('lib/tar.ts Definition of function readTar');expect(reasons).not.toMatch(/function text /);expect(reasons).not.toContain('lib/util.ts');
+    // path.resolve() is not Graph#resolve, but graph.resolve() is.
+    expect(items.filter(i=>i.reason.includes('method resolve')).map(i=>i.path)).toEqual(['lib/graph.ts']);expect(reasons).toMatch(/method resolve used by changed code in app\/cli.ts/);
+  });
   it('finds importing callers and called definitions but not same-named decoys',async()=>{
     const f={
       'src/auth.ts':"import {loadUser} from './users';\nexport function canAccess(token: string) {\n  const user = loadUser(token);\n  return user !== null;\n}\n",
