@@ -31,6 +31,8 @@ export async function prepareLocal(repo:string,base:string,head:string,config:Re
   const chosen=changes.filter(x=>!config.ignore.some(p=>pathMatches(x.path,p))&&!/(^|\/)(node_modules|vendor|dist|build|coverage)\//.test(x.path)&&!/(\.min\.[jt]s|\.map|\.lock|lock\.yaml)$/.test(x.path));
   const out:PreparedFiles=[];out.omitted=chosen.length-config.context.maxFiles>0?chosen.length-config.context.maxFiles:0;out.notes=[];
   for(const {path:name,status} of chosen.slice(0,config.context.maxFiles)){safePath(name);if(status==='D'){out.notes.push(`Deleted file ${name} is not covered by inline review`);continue}
+    const size=async(rev:string)=>{try{return Number((await git(root,'cat-file','-s',`${rev}:${name}`)).trim())}catch{return 0}};
+    const beforeSize=await size(base),afterSize=await size(head);if(beforeSize>config.context.maxBytesPerFile||afterSize>config.context.maxBytesPerFile){out.notes.push(`Large file omitted: ${name}`);continue}
     const patch=await git(root,'diff','--no-ext-diff','--no-renames','--unified=3',base,head,'--',name);if(!patch||patch.includes('Binary files')||patch.includes('GIT binary patch')){out.notes.push(`Binary or empty diff omitted: ${name}`);continue}
     const get=async(rev:string)=>{try{return await git(root,'show',`${rev}:${name}`)}catch{return ''}};
     const before=await get(base),after=await get(head),limit=config.context.maxBytesPerFile;
