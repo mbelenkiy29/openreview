@@ -23,6 +23,8 @@ export function parseAddedLines(patch:string):number[]{let line=0;const result:n
 export function safePath(path:string){if(!path||isAbsolute(path)||path.split(/[\\/]/).some(p=>p==='..'||p==='.git')||path.includes('\0'))throw new Error('Unsafe path');return path}
 export function redactSecrets(input:string){return input.replace(/-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/g,'[REDACTED PRIVATE KEY]').replace(/\b(?:gh[psuor]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16})\b/g,'[REDACTED TOKEN]').replace(/((?:api[_-]?key|secret|password|token)\s*[:=]\s*["']?)([A-Za-z0-9_+\-/=]{16,})/gi,'$1[REDACTED]')}
 export function pathMatches(path:string,pattern:string){const regex='^'+pattern.split('**').map(part=>part.split('*').map(s=>s.replace(/[|\\{}()[\]^$+?.]/g,'\\$&')).join('[^/]*')).join('.*')+'$';return new RegExp(regex).test(path)}
+const circuit=new Map<string,{failures:number;until:number}>();
+async function guarded<T>(key:string,operation:()=>Promise<T>):Promise<T>{const state=circuit.get(key);if(state&&state.until>Date.now())throw Error('Model provider circuit open');try{const result=await operation();circuit.delete(key);return result}catch(e){const failures=(state?.failures??0)+1;circuit.set(key,{failures,until:failures>=3?Date.now()+60000:0});throw e}}
 export async function git(repo:string,...args:string[]){return (await exec('git',['-c','core.hooksPath=/dev/null','-c','filter.lfs.required=false','-c','filter.lfs.smudge=','-C',repo,...args],{maxBuffer:20_000_000,timeout:30000})).stdout}
 export async function prepareLocal(repo:string,base:string,head:string,config:ReviewConfig):Promise<PreparedFiles>{
   const root=await realpath(repo);const raw=await git(root,'diff','--name-status','-z','--no-renames',base,head,'--');const parts=raw.split('\0');const changes:{status:string;path:string}[]=[];for(let i=0;i<parts.length-1;i+=2)changes.push({status:parts[i],path:parts[i+1]});
@@ -76,19 +78,19 @@ export async function review(files:FileChange[],model:ModelAdapter,config:Review
 }
 export class OpenAICompatible implements ModelAdapter{
   constructor(private endpoint:string,private key:string,private model:string,private inputPrice?:number,private outputPrice?:number,private jsonMode=true,private tokenField:'max_tokens'|'max_completion_tokens'='max_tokens'){}
-  async analyze(prompt:string,maxOutputTokens:number){const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),60000);try{
+  async analyze(prompt:string,maxOutputTokens:number){return guarded(`${this.endpoint}:${this.model}`,async()=>{const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),60000);try{
     const res=await fetch(`${this.endpoint.replace(/\/$/,'')}/chat/completions`,{method:'POST',signal:controller.signal,headers:{Authorization:`Bearer ${this.key}`,'Content-Type':'application/json'},body:JSON.stringify({model:this.model,messages:[{role:'user',content:prompt}],[this.tokenField]:maxOutputTokens,...(this.jsonMode?{response_format:{type:'json_object'}}:{})})});
     if(!res.ok)throw new Error(`Provider HTTP ${res.status}`);const data:any=await res.json();const inputTokens=data.usage?.prompt_tokens??0,outputTokens=data.usage?.completion_tokens??0;
     return {findings:data.choices?.[0]?.message?.content??'',usage:{inputTokens,outputTokens,estimatedUsd:this.inputPrice===undefined||this.outputPrice===undefined?null:(inputTokens*this.inputPrice+outputTokens*this.outputPrice)/1_000_000}};
-  }finally{clearTimeout(timer)}}
+  }finally{clearTimeout(timer)}})}
 }
 export class Anthropic implements ModelAdapter{
   constructor(private key:string,private model:string,private inputPrice?:number,private outputPrice?:number,private endpoint='https://api.anthropic.com'){}
-  async analyze(prompt:string,maxOutputTokens:number){const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),60000);try{
+  async analyze(prompt:string,maxOutputTokens:number){return guarded(`${this.endpoint}:${this.model}`,async()=>{const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),60000);try{
     const res=await fetch(`${this.endpoint.replace(/\/$/,'')}/v1/messages`,{method:'POST',signal:controller.signal,headers:{'x-api-key':this.key,'anthropic-version':'2023-06-01','content-type':'application/json'},body:JSON.stringify({model:this.model,max_tokens:maxOutputTokens,messages:[{role:'user',content:prompt}]})});
     if(!res.ok)throw new Error(`Provider HTTP ${res.status}`);const data:any=await res.json();const inputTokens=data.usage?.input_tokens??0,outputTokens=data.usage?.output_tokens??0;
     return {findings:data.content?.filter((c:any)=>c.type==='text').map((c:any)=>c.text).join('')??'',usage:{inputTokens,outputTokens,estimatedUsd:this.inputPrice===undefined||this.outputPrice===undefined?null:(inputTokens*this.inputPrice+outputTokens*this.outputPrice)/1_000_000}};
-  }finally{clearTimeout(timer)}}
+  }finally{clearTimeout(timer)}})}
 }
 export function modelPrices(mode:'economy'|'balanced'|'deep'='economy'){const suffix=mode.toUpperCase();return {input:process.env[`MODEL_INPUT_USD_PER_MILLION_${suffix}`]?Number(process.env[`MODEL_INPUT_USD_PER_MILLION_${suffix}`]):process.env.MODEL_INPUT_USD_PER_MILLION?Number(process.env.MODEL_INPUT_USD_PER_MILLION):undefined,output:process.env[`MODEL_OUTPUT_USD_PER_MILLION_${suffix}`]?Number(process.env[`MODEL_OUTPUT_USD_PER_MILLION_${suffix}`]):process.env.MODEL_OUTPUT_USD_PER_MILLION?Number(process.env.MODEL_OUTPUT_USD_PER_MILLION):undefined}}
 export function configuredModel(mode:'economy'|'balanced'|'deep'='economy'):ModelAdapter{const {input:i,output:o}=modelPrices(mode);
