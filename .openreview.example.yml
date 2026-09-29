@@ -1,0 +1,18 @@
+mode: economy
+drafts: false
+branches:
+  include: [main]
+  exclude: []
+ignore:
+  - "**/*.generated.ts"
+  - "docs/**"
+pathStandards:
+  "src/auth/**": "Check authorization at the server boundary and trace anonymous callers."
+severityThreshold: medium
+commentLimit: 5
+budgetUsd: 1
+context:
+  maxFiles: 60
+  maxBytesPerFile: 60000
+  maxInputTokens: 24000
+  maxOutputTokens: 2500

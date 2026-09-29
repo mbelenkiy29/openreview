@@ -5,5 +5,5 @@
   "redirect_url": "https://YOUR_DASHBOARD_DOMAIN",
   "public": false,
   "default_permissions": {"contents": "read", "pull_requests": "write"},
-  "default_events": ["pull_request"]
+  "default_events": ["pull_request", "issue_comment", "installation", "installation_repositories"]
 }
