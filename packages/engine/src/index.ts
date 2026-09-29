@@ -27,13 +27,13 @@ const circuit=new Map<string,{failures:number;until:number}>();
 async function guarded<T>(key:string,operation:()=>Promise<T>):Promise<T>{const state=circuit.get(key);if(state&&state.until>Date.now())throw Error('Model provider circuit open');try{const result=await operation();circuit.delete(key);return result}catch(e){const failures=(state?.failures??0)+1;circuit.set(key,{failures,until:failures>=3?Date.now()+60000:0});throw e}}
 export async function git(repo:string,...args:string[]){return (await exec('git',['-c','core.hooksPath=/dev/null','-c','filter.lfs.required=false','-c','filter.lfs.smudge=','-C',repo,...args],{maxBuffer:20_000_000,timeout:30000})).stdout}
 export async function prepareLocal(repo:string,base:string,head:string,config:ReviewConfig):Promise<PreparedFiles>{
-  const root=await realpath(repo);const raw=await git(root,'diff','--name-status','-z','--no-renames',base,head,'--');const parts=raw.split('\0');const changes:{status:string;path:string}[]=[];for(let i=0;i<parts.length-1;i+=2)changes.push({status:parts[i],path:parts[i+1]});
+  const root=await realpath((await git(repo,'rev-parse','--show-toplevel')).trim());const raw=await git(root,'diff','--name-status','-z','--no-renames',base,head,'--');const parts=raw.split('\0');const changes:{status:string;path:string}[]=[];for(let i=0;i<parts.length-1;i+=2)changes.push({status:parts[i],path:parts[i+1]});
   const chosen=changes.filter(x=>!config.ignore.some(p=>pathMatches(x.path,p))&&!/(^|\/)(node_modules|vendor|dist|build|coverage)\//.test(x.path)&&!/(\.min\.[jt]s|\.map|\.lock|lock\.yaml)$/.test(x.path));
   const out:PreparedFiles=[];out.omitted=chosen.length-config.context.maxFiles>0?chosen.length-config.context.maxFiles:0;out.notes=[];
   for(const {path:name,status} of chosen.slice(0,config.context.maxFiles)){safePath(name);if(status==='D'){out.notes.push(`Deleted file ${name} is not covered by inline review`);continue}
     const size=async(rev:string)=>{try{return Number((await git(root,'cat-file','-s',`${rev}:${name}`)).trim())}catch{return 0}};
     const beforeSize=await size(base),afterSize=await size(head);if(beforeSize>config.context.maxBytesPerFile||afterSize>config.context.maxBytesPerFile){out.notes.push(`Large file omitted: ${name}`);continue}
-    const patch=await git(root,'diff','--no-ext-diff','--no-renames','--unified=3',base,head,'--',name);if(!patch||patch.includes('Binary files')||patch.includes('GIT binary patch')){out.notes.push(`Binary or empty diff omitted: ${name}`);continue}
+    const patch=await git(root,'diff','--no-ext-diff','--no-renames','--unified=3',base,head,'--',name);if(!patch||/^(?:Binary files .* differ|GIT binary patch)$/m.test(patch)){out.notes.push(`Binary or empty diff omitted: ${name}`);continue}
     const get=async(rev:string)=>{try{return await git(root,'show',`${rev}:${name}`)}catch{return ''}};
     const before=await get(base),after=await get(head),limit=config.context.maxBytesPerFile;
     const truncated=before.length>limit||after.length>limit||patch.length>limit;if(truncated)out.notes.push(`Large file truncated: ${name}`);
