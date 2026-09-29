@@ -6,9 +6,9 @@ import { isReviewable } from '@openreview/indexer';
 import type { SourceContext } from './context.js';
 import { git,pathMatches } from './util.js';
 export { git,pathMatches } from './util.js';
-export { changedSymbols,gatherContext,grepContext,type Retriever } from './context.js';
+export { changedSymbols,contextFromGraph,gatherContext,grepContext,type Retriever,type SourceContext } from './context.js';
 import { Config,CommentType,Severity,configFor,isIgnored,type FileSettings,type ReviewConfig } from './config.js';
-export { Config,CommentType,ScopedConfig,Severity,configFor,isIgnored,readTrustedConfig,type FileSettings,type ReviewConfig,type Section } from './config.js';
+export { Config,CommentType,ScopedConfig,Severity,configFor,isIgnored,readTrustedConfig,readTrustedConfigFrom,type ConfigSource,type FileSettings,type ReviewConfig,type Section } from './config.js';
 export * from './render.js';
 
 export const Finding=z.object({path:z.string(),line:z.number().int().positive(),severity:Severity,title:z.string().min(8).max(150),scenario:z.string().min(12),impact:z.string().min(12),evidence:z.string().min(12),remediation:z.string().min(12),
@@ -30,19 +30,35 @@ export function safePath(path:string){if(!path||isAbsolute(path)||path.split(/[\
 export function redactSecrets(input:string){return input.replace(/-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/g,'[REDACTED PRIVATE KEY]').replace(/\b(?:gh[psuor]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16})\b/g,'[REDACTED TOKEN]').replace(/((?:api[_-]?key|secret|password|token)\s*[:=]\s*["']?)([A-Za-z0-9_+\-/=]{16,})/gi,'$1[REDACTED]')}
 const circuit=new Map<string,{failures:number;until:number}>();
 async function guarded<T>(key:string,operation:()=>Promise<T>):Promise<T>{const state=circuit.get(key);if(state&&state.until>Date.now())throw Error('Model provider circuit open');try{const result=await operation();circuit.delete(key);return result}catch(e){const failures=(state?.failures??0)+1;circuit.set(key,{failures,until:failures>=3?Date.now()+60000:0});throw e}}
+const VENDORED_CHANGE=/(^|\/)(node_modules|vendor|dist|build|coverage)\//,LOCKFILE=/(\.min\.[jt]s|\.map|\.lock|lock\.yaml)$/;
+function selectChanges<T extends {path:string}>(changes:T[],config:ReviewConfig){const chosen=changes.filter(x=>!isIgnored(config,x.path)&&!VENDORED_CHANGE.test(x.path)&&!LOCKFILE.test(x.path));
+  return {chosen:chosen.slice(0,config.context.maxFiles),omitted:Math.max(0,chosen.length-config.context.maxFiles)}}
+// Shared by the git and snapshot paths: size limits, binary detection and truncation notes.
+function toFileChange(c:{path:string;status:string;patch:string|undefined;before:string;after:string;beforeSize:number;afterSize:number},config:ReviewConfig,notes:string[]):FileChange|undefined{
+  const limit=config.context.maxBytesPerFile;if(c.beforeSize>limit||c.afterSize>limit){notes.push(`Large file omitted: ${c.path}`);return undefined}
+  if(!c.patch||/^(?:Binary files .* differ|GIT binary patch)$/m.test(c.patch)){notes.push(`Binary or empty diff omitted: ${c.path}`);return undefined}
+  const truncated=c.before.length>limit||c.after.length>limit||c.patch.length>limit;if(truncated)notes.push(`Large file truncated: ${c.path}`);
+  return {path:c.path,status:c.status,patch:c.patch.slice(0,limit),addedLines:parseAddedLines(c.patch),before:c.before.slice(0,limit),after:c.after.slice(0,limit),truncated}}
 export async function prepareLocal(repo:string,base:string,head:string,config:ReviewConfig):Promise<PreparedFiles>{
   const root=await realpath((await git(repo,'rev-parse','--show-toplevel')).trim());const raw=await git(root,'diff','--name-status','-z','--no-renames',base,head,'--');const parts=raw.split('\0');const changes:{status:string;path:string}[]=[];for(let i=0;i<parts.length-1;i+=2)changes.push({status:parts[i],path:parts[i+1]});
-  const chosen=changes.filter(x=>!isIgnored(config,x.path)&&!/(^|\/)(node_modules|vendor|dist|build|coverage)\//.test(x.path)&&!/(\.min\.[jt]s|\.map|\.lock|lock\.yaml)$/.test(x.path));
-  const out:PreparedFiles=[];out.omitted=chosen.length-config.context.maxFiles>0?chosen.length-config.context.maxFiles:0;out.notes=[];
-  for(const {path:name,status} of chosen.slice(0,config.context.maxFiles)){safePath(name);if(status==='D'){out.notes.push(`Deleted file ${name} is not covered by inline review`);continue}
+  const {chosen,omitted}=selectChanges(changes,config),out:PreparedFiles=[];out.omitted=omitted;out.notes=[];
+  for(const {path:name,status} of chosen){safePath(name);if(status==='D'){out.notes.push(`Deleted file ${name} is not covered by inline review`);continue}
     const size=async(rev:string)=>{try{return Number((await git(root,'cat-file','-s',`${rev}:${name}`)).trim())}catch{return 0}};
     const beforeSize=await size(base),afterSize=await size(head);if(beforeSize>config.context.maxBytesPerFile||afterSize>config.context.maxBytesPerFile){out.notes.push(`Large file omitted: ${name}`);continue}
-    const patch=await git(root,'diff','--no-ext-diff','--no-renames','--unified=3',base,head,'--',name);if(!patch||/^(?:Binary files .* differ|GIT binary patch)$/m.test(patch)){out.notes.push(`Binary or empty diff omitted: ${name}`);continue}
+    const patch=await git(root,'diff','--no-ext-diff','--no-renames','--unified=3',base,head,'--',name);
     const get=async(rev:string)=>{try{return await git(root,'show',`${rev}:${name}`)}catch{return ''}};
-    const before=await get(base),after=await get(head),limit=config.context.maxBytesPerFile;
-    const truncated=before.length>limit||after.length>limit||patch.length>limit;if(truncated)out.notes.push(`Large file truncated: ${name}`);
-    out.push({path:name,status,patch:patch.slice(0,limit),addedLines:parseAddedLines(patch),before:before.slice(0,limit),after:after.slice(0,limit),truncated});
+    const change=toFileChange({path:name,status,patch,before:await get(base),after:await get(head),beforeSize,afterSize},config,out.notes);if(change)out.push(change);
   }return out;
+}
+/** A changed file as a code host reports it: unified-diff hunks plus full before/after text (null when absent). */
+export type Snapshot={path:string;status:'A'|'M'|'D';patch?:string;before:string|null;after:string|null};
+/** Same selection, limits and notes as prepareLocal, for callers that fetched the diff without git (e.g. a hosted API). */
+export function prepareFromSnapshots(snapshots:Snapshot[],config:ReviewConfig):PreparedFiles{
+  const {chosen,omitted}=selectChanges(snapshots,config),out:PreparedFiles=[];out.omitted=omitted;out.notes=[];
+  for(const s of chosen){safePath(s.path);if(s.status==='D'){out.notes.push(`Deleted file ${s.path} is not covered by inline review`);continue}
+    const before=s.before??'',after=s.after??'';if(before.includes('\0')||after.includes('\0')){out.notes.push(`Binary or empty diff omitted: ${s.path}`);continue}
+    const change=toFileChange({path:s.path,status:s.status,patch:s.patch,before,after,beforeSize:Buffer.byteLength(before),afterSize:Buffer.byteLength(after)},config,out.notes);if(change)out.push(change)}
+  return out;
 }
 // Accepts a parsed object or model text, tolerating a ```json fence or prose around one JSON object.
 export function parseModelJson(raw:unknown):unknown{if(typeof raw!=='string')return raw;const text=raw.trim();try{return JSON.parse(text)}catch{const a=text.indexOf('{'),b=text.lastIndexOf('}');if(a<0||b<=a)throw new Error('Model response is not JSON');return JSON.parse(text.slice(a,b+1))}}

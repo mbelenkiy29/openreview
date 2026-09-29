@@ -38,7 +38,8 @@ export type Resolver={paths:Set<string>;dirs:Map<string,string[]>;suffix:Map<str
 
 export class CodeGraph{
   readonly files=new Map<string,FileNode>();readonly defsByName=new Map<string,{path:string;def:Definition}[]>();readonly refsByName=new Map<string,{path:string;ref:Reference}[]>();readonly importers=new Map<string,Set<string>>();
-  constructor(readonly repo:string,readonly rev:string,nodes:FileNode[],private blobs:Map<string,string>){
+  /** `reader` returns file contents for paths in the indexed revision (git blobs or an in-memory snapshot). */
+  constructor(nodes:FileNode[],private reader:(paths:string[])=>Promise<Map<string,string>>){
     for(const n of nodes){this.files.set(n.path,n);
       for(const def of n.defs){const list=this.defsByName.get(def.name)??[];list.push({path:n.path,def});this.defsByName.set(def.name,list)}
       for(const ref of n.refs){const list=this.refsByName.get(ref.name)??[];list.push({path:n.path,ref});this.refsByName.set(ref.name,list)}
@@ -52,8 +53,7 @@ export class CodeGraph{
       // Go and Java packages share names across files in one directory without imports.
       if(score===0.6&&(node.language==='go'||node.language==='java'||node.language==='csharp'))score=0.85;return {path,def,score}}).sort((a,b)=>b.score-a.score);
   }
-  async read(paths:string[]):Promise<Map<string,string>>{const want=paths.map(p=>[p,this.blobs.get(p)] as const).filter((x):x is readonly [string,string]=>!!x[1]);
-    const blobs=await readBlobs(this.repo,[...new Set(want.map(x=>x[1]))]);return new Map(want.map(([p,b])=>[p,blobs.get(b)?.toString('utf8')??'']))}
+  read(paths:string[]):Promise<Map<string,string>>{return this.reader(paths)}
 }
 
 function stripJsonComments(text:string){return text.replace(/"(?:\\.|[^"\\])*"|\/\/[^\n]*|\/\*[\s\S]*?\*\//g,m=>m.startsWith('"')?m:'').replace(/,(\s*[}\]])/g,'$1')}
@@ -118,24 +118,45 @@ async function store(cacheDir:string|undefined,blob:string,value:ParsedFile){rem
  * Builds a symbol/reference/import graph for `rev`. Parsed files are cached by blob sha, so repeat builds only parse changed blobs.
  * Pass `cacheDir` to persist the cache across processes.
  */
-export async function buildGraph(repo:string,rev:string,options:BuildOptions={}):Promise<CodeGraph>{
-  const maxFiles=options.maxFiles??25000,maxBytes=options.maxBytes??400_000;
-  const raw=await git(repo,'ls-tree','-r','-z','--long',rev),entries:Entry[]=[];
-  for(const line of raw.split('\0')){const tab=line.indexOf('\t');if(tab<0)continue;const [,type,blob,size]=line.slice(0,tab).trim().split(/\s+/),path=line.slice(tab+1);
-    if(type!=='blob'||path.split('/').some(p=>p==='..'||p==='.git'))continue;entries.push({path,blob,size:Number(size)})}
+type Source={entries:Entry[];load:(blobs:string[])=>Promise<Map<string,Buffer>>};
+async function assemble(source:Source,options:BuildOptions):Promise<FileNode[]>{
+  const maxFiles=options.maxFiles??25000,maxBytes=options.maxBytes??400_000,{entries}=source;
   const allPaths=entries.map(e=>e.path),blobs=new Map(entries.map(e=>[e.path,e.blob]));
   const sources=entries.filter(e=>languageFor(e.path)&&e.size<=maxBytes&&!VENDORED.test(e.path)&&!GENERATED.test(e.path)).slice(0,maxFiles);
-  const configs=entries.filter(e=>!VENDORED.test(e.path)&&e.size<=200_000&&(/(^|\/)(package\.json|go\.mod)$/.test(e.path)||/^tsconfig(\.base)?\.json$/.test(e.path)));
+  const configs=entries.filter(e=>isGraphConfig(e.path)&&e.size<=200_000);
   const parsed=new Map<string,ParsedFile>(),missing:Entry[]=[];
   for(const e of sources){const hit=await cached(options.cacheDir,e.blob);if(hit)parsed.set(e.path,hit);else missing.push(e)}
   const configText=new Map<string,string>();
   const pending=[...missing,...configs],isConfig=new Set(configs);
-  for(let i=0;i<pending.length;i+=200){const batch=pending.slice(i,i+200),content=await readBlobs(repo,batch.map(e=>e.blob));
+  for(let i=0;i<pending.length;i+=200){const batch=pending.slice(i,i+200),content=await source.load(batch.map(e=>e.blob));
     for(const e of batch){const buf=content.get(e.blob);if(!buf)continue;if(isConfig.has(e)){configText.set(e.path,buf.toString('utf8'));continue}
       if(buf.subarray(0,8000).includes(0))continue;try{const value=await parseSource(e.path,buf.toString('utf8'));if(value){parsed.set(e.path,value);await store(options.cacheDir,e.blob,value)}}catch{/* unparseable file is skipped */}}}
   const resolver=buildResolver(allPaths,configText);
-  const nodes:FileNode[]=[...parsed].map(([path,p])=>({...p,path,blob:blobs.get(path)!,resolved:[...new Set(p.imports.flatMap(s=>resolveImport(resolver,path,s,p.language)))].filter(x=>x!==path)}));
-  return new CodeGraph(repo,rev,nodes,blobs);
+  return [...parsed].map(([path,p])=>({...p,path,blob:blobs.get(path)!,resolved:[...new Set(p.imports.flatMap(s=>resolveImport(resolver,path,s,p.language)))].filter(x=>x!==path)}));
+}
+/** Package manifests and tsconfig files the import resolver reads. */
+export const isGraphConfig=(path:string)=>!VENDORED.test(path)&&(/(^|\/)(package\.json|go\.mod)$/.test(path)||/^tsconfig(\.base)?\.json$/.test(path));
+/** Git's blob id for `content`, so snapshots share the parse cache with git-backed builds. */
+export const blobSha=(content:Buffer)=>createHash('sha1').update(`blob ${content.length}\0`).update(content).digest('hex');
+
+/**
+ * Builds a symbol/reference/import graph for `rev`. Parsed files are cached by blob sha, so repeat builds only parse changed blobs.
+ * Pass `cacheDir` to persist the cache across processes.
+ */
+export async function buildGraph(repo:string,rev:string,options:BuildOptions={}):Promise<CodeGraph>{
+  const raw=await git(repo,'ls-tree','-r','-z','--long',rev),entries:Entry[]=[];
+  for(const line of raw.split('\0')){const tab=line.indexOf('\t');if(tab<0)continue;const [,type,blob,size]=line.slice(0,tab).trim().split(/\s+/),path=line.slice(tab+1);
+    if(type!=='blob'||path.split('/').some(p=>p==='..'||p==='.git'))continue;entries.push({path,blob,size:Number(size)})}
+  const nodes=await assemble({entries,load:blobs=>readBlobs(repo,blobs)},options),byPath=new Map(entries.map(e=>[e.path,e.blob]));
+  return new CodeGraph(nodes,async paths=>{const want=paths.map(p=>[p,byPath.get(p)] as const).filter((x):x is readonly [string,string]=>!!x[1]);
+    const blobs=await readBlobs(repo,[...new Set(want.map(x=>x[1]))]);return new Map(want.map(([p,b])=>[p,blobs.get(b)?.toString('utf8')??'']))});
+}
+/** Builds the same graph from an in-memory snapshot (path → content), for environments without git. */
+export async function buildGraphFromFiles(files:Map<string,Buffer|string>,options:BuildOptions={}):Promise<CodeGraph>{
+  const byBlob=new Map<string,Buffer>(),entries:Entry[]=[];
+  for(const [path,value] of files){if(path.split('/').some(p=>p==='..'||p==='.git'||!p))continue;const buf=typeof value==='string'?Buffer.from(value):value,blob=blobSha(buf);byBlob.set(blob,buf);entries.push({path,blob,size:buf.length})}
+  const nodes=await assemble({entries,load:async blobs=>new Map(blobs.flatMap(b=>byBlob.has(b)?[[b,byBlob.get(b)!] as const]:[]))},options);
+  return new CodeGraph(nodes,async paths=>new Map(paths.flatMap(p=>files.has(p)?[[p,String(files.get(p))] as const]:[])));
 }
 
 /** Files that historically change together with `paths` (from the last `limit` commits), as path→count. */

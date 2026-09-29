@@ -68,22 +68,27 @@ export function isIgnored(config:ReviewConfig,path:string){return configFor(conf
 
 const ROOT_FILES=['.openreview.yml','.openreview.yaml','greptile.json'];
 const parseFile=(name:string,raw:string)=>name.endsWith('.json')?JSON.parse(raw):YAML.parse(raw)??{};
-/**
- * Reads configuration from the trusted base revision only, so a pull request cannot weaken its own review.
- * `.openreview.yml` wins over `greptile.json`; nested files in subdirectories become scoped overrides.
- */
-export async function readTrustedConfig(repo:string,base:string):Promise<ReviewConfig>{
-  let root:unknown={};for(const name of ROOT_FILES){let raw:string;try{raw=await git(repo,'show',`${base}:${name}`)}catch{continue}root=parseFile(name,raw);break}
+export type ConfigSource={list():Promise<string[]>;read(path:string):Promise<string|undefined>};
+/** Reads root and nested configs from any trusted source of base-revision files. */
+export async function readTrustedConfigFrom(source:ConfigSource):Promise<ReviewConfig>{
+  let root:unknown={};for(const name of ROOT_FILES){const raw=await source.read(name);if(raw===undefined)continue;root=parseFile(name,raw);break}
   const config=Config.parse({...(root as object),scopes:[],configWarnings:[]});
-  let listing='';try{listing=await git(repo,'ls-tree','-r','-z','--name-only',base)}catch{return config}
+  let listing:string[]=[];try{listing=await source.list()}catch{return config}
   const byDir=new Map<string,string>();
-  for(const path of listing.split('\0')){const slash=path.lastIndexOf('/'),name=path.slice(slash+1),dir=path.slice(0,Math.max(0,slash));
+  for(const path of listing){const slash=path.lastIndexOf('/'),name=path.slice(slash+1),dir=path.slice(0,Math.max(0,slash));
     if(slash<0||!ROOT_FILES.includes(name)||/(^|\/)(node_modules|vendor|dist|build)(\/|$)/.test(dir))continue;
     const current=byDir.get(dir);if(!current||ROOT_FILES.indexOf(name)<ROOT_FILES.indexOf(current.slice(current.lastIndexOf('/')+1)))byDir.set(dir,path)}
   for(const [dir,path] of [...byDir].sort((a,b)=>a[0].localeCompare(b[0])).slice(0,50)){
-    try{const parsed=ScopedConfig.safeParse(parseFile(path,await git(repo,'show',`${base}:${path}`)));
+    try{const raw=await source.read(path);if(raw===undefined)throw new Error('missing');const parsed=ScopedConfig.safeParse(parseFile(path,raw));
       if(parsed.success)config.scopes.push({...parsed.data,dir});else config.configWarnings.push(`Ignored invalid config ${path}`)}
     catch{config.configWarnings.push(`Ignored unreadable config ${path}`)}}
   if(byDir.size>50)config.configWarnings.push(`Only the first 50 nested configs were applied`);
   return config;
+}
+/**
+ * Reads configuration from the trusted base revision only, so a pull request cannot weaken its own review.
+ * `.openreview.yml` wins over `greptile.json`; nested files in subdirectories become scoped overrides.
+ */
+export function readTrustedConfig(repo:string,base:string):Promise<ReviewConfig>{
+  return readTrustedConfigFrom({list:async()=>(await git(repo,'ls-tree','-r','-z','--name-only',base)).split('\0').filter(Boolean),read:async path=>{try{return await git(repo,'show',`${base}:${path}`)}catch{return undefined}}});
 }

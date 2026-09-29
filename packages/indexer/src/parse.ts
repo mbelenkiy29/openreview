@@ -1,12 +1,21 @@
-import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { LANGUAGES, languageFor, type LanguageId, type LanguageSpec } from './languages.js';
 
-// The package is UMD/CommonJS, so ESM named imports are not available at runtime.
-const require=createRequire(import.meta.url);
+// The runtime is UMD/CommonJS and ships its grammars as .wasm files next to it. It is loaded lazily through
+// Node's own module loader (hidden from bundlers, which would otherwise rewrite require/resolve), trying:
+// TREE_SITTER_WASM_DIR, this module's location, then the working directory (e.g. a Next.js app on Vercel).
 type TreeSitter=typeof import('@vscode/tree-sitter-wasm');
-const TS=require('@vscode/tree-sitter-wasm') as TreeSitter;
-const wasmDir=dirname(require.resolve('@vscode/tree-sitter-wasm'));
+const PACKAGE='@vscode/tree-sitter-wasm';
+let runtime:{TS:TreeSitter;wasmDir:string}|undefined;
+function treeSitter(){if(runtime)return runtime;const {createRequire}=process.getBuiltinModule('node:module') as typeof import('node:module');
+  const {existsSync}=process.getBuiltinModule('node:fs') as typeof import('node:fs'),cwd=process.cwd(),dirs:string[]=[];
+  if(process.env.TREE_SITTER_WASM_DIR)dirs.push(process.env.TREE_SITTER_WASM_DIR);
+  for(const base of [import.meta.url,pathToFileURL(join(cwd,'package.json')).href]){try{dirs.push(dirname(createRequire(base).resolve(PACKAGE)))}catch{/* try the next location */}}
+  dirs.push(...[cwd,join(cwd,'apps/web')].map(d=>join(d,'node_modules',PACKAGE,'wasm')));
+  const dir=dirs.find(d=>existsSync(join(d,'tree-sitter.js'))&&existsSync(join(d,'tree-sitter.wasm')));
+  if(!dir)throw new Error(`Cannot find ${PACKAGE} (looked in ${dirs.join(', ')}); set TREE_SITTER_WASM_DIR`);
+  return runtime={TS:createRequire(pathToFileURL(join(dir,'tree-sitter.js')).href)(join(dir,'tree-sitter.js')) as TreeSitter,wasmDir:dir}}
 
 export type DefKind='function'|'method'|'class'|'interface'|'type'|'enum'|'variable';
 export type Definition={name:string;kind:DefKind;startLine:number;endLine:number};
@@ -17,7 +26,7 @@ type Loaded={parser:InstanceType<TreeSitter['Parser']>;defs:InstanceType<TreeSit
 let ready:Promise<void>|undefined;
 const loaded=new Map<LanguageId,Promise<Loaded>>();
 
-async function load(spec:LanguageSpec):Promise<Loaded>{
+async function load(spec:LanguageSpec):Promise<Loaded>{const {TS,wasmDir}=treeSitter();
   ready??=TS.Parser.init({locateFile:(file:string)=>join(wasmDir,file)});await ready;
   const language=await TS.Language.load(join(wasmDir,spec.wasm)),parser=new TS.Parser();parser.setLanguage(language);
   return {parser,defs:new TS.Query(language,spec.defs),refs:new TS.Query(language,spec.refs),imports:new TS.Query(language,spec.imports)};

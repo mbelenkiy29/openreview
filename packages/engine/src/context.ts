@@ -1,5 +1,5 @@
 import ts from 'typescript';
-import {buildGraph,coChangedFiles,retrieveContext} from '@openreview/indexer';
+import {buildGraph,coChangedFiles,retrieveContext,type CodeGraph} from '@openreview/indexer';
 import {git,safePath,type FileChange,type ReviewConfig} from './index.js';
 
 export type SourceContext={path:string;reason:string;snippet:string};
@@ -18,11 +18,15 @@ const contextBudget=(config:ReviewConfig)=>Math.floor(Math.min(config.context.ma
  */
 export async function gatherContext(repo:string,head:string,files:FileChange[],config:ReviewConfig,retriever:Retriever='graph'):Promise<SourceContext[]>{
   if(retriever==='graph')try{
-    const graph=await buildGraph(repo,head,{cacheDir:process.env.OPENREVIEW_INDEX_CACHE||undefined}),coChanged=await coChangedFiles(repo,head,files.map(f=>f.path));
-    const items=await retrieveContext(graph,files,{budgetChars:contextBudget(config),maxItems:16,coChanged});
-    return items.map(i=>{safePath(i.path);return {path:i.path,reason:`${i.reason} [lines ${i.startLine}-${i.endLine}]`,snippet:i.snippet}});
+    const graph=await buildGraph(repo,head,{cacheDir:process.env.OPENREVIEW_INDEX_CACHE||undefined});
+    return await contextFromGraph(graph,files,config,await coChangedFiles(repo,head,files.map(f=>f.path)));
   }catch{/* fall back to lexical search */}
   return grepContext(repo,head,files,config);
+}
+/** Cross-file context from an already built graph (git-backed or snapshot). `coChanged` is optional history. */
+export async function contextFromGraph(graph:CodeGraph,files:FileChange[],config:ReviewConfig,coChanged?:Map<string,number>):Promise<SourceContext[]>{
+  const items=await retrieveContext(graph,files,{budgetChars:contextBudget(config),maxItems:16,coChanged});
+  return items.map(i=>{safePath(i.path);return {path:i.path,reason:`${i.reason} [lines ${i.startLine}-${i.endLine}]`,snippet:i.snippet}});
 }
 export async function grepContext(repo:string,head:string,files:FileChange[],config:ReviewConfig):Promise<SourceContext[]>{const out:SourceContext[]=[],visited=new Set(files.map(f=>f.path));let budget=contextBudget(config);
   const candidates=new Set<string>();for(const f of files)for(const symbol of changedSymbols(f))if(symbol.length>=4)candidates.add(symbol);
