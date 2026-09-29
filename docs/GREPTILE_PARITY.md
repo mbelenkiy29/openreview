@@ -59,7 +59,9 @@ Status: `packages/indexer` builds the graph per review with a blob-SHA parse cac
 - Keep the character budget and rank by graph distance plus risk score.
 - Remove the language whitelist; review every language that has a grammar.
 
-### Phase 2: Review output parity
+### Phase 2: Review output parity — implemented
+Status: Greptile-compatible config (root and nested, `greptile.json` accepted), summary with confidence score, issues and files tables and a Mermaid diagram, suggestion blocks, per-comment type and confidence, and optional PR descriptions. No extra model call: the summary rides in discovery and confidence comes from verification. Not done: `context.repos` (phase 4), and verifying rendering on a live GitHub PR.
+
 - **Config:** extend the zod `Config` in `engine/src/index.ts`:
   - `strictness`, `commentTypes`, `rules[]` with id/scope/severity, `disabledRules`, `instructions`, `summarySection`/`issuesTable`/`confidenceScore`/`sequenceDiagram` toggles, `context.repos`;
   - nested per-directory configs (child configs override the parent);

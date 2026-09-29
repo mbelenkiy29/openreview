@@ -30,7 +30,28 @@ The connected [Vercel preview](https://openreview-emzwpp08x-michael-belenkiys-pr
 
 Copy `.openreview.example.yml` to `.openreview.yml` in the base branch. The engine reads this file from the trusted base revision, so a PR cannot weaken the rules for its own review. Schema validation rejects invalid values. Dashboard budgets and operator server caps override `budgetUsd` by taking the lower limit; server file/input caps also apply. Operator environment variables choose credentials, endpoints, token prices and model IDs; the repository file cannot set secrets. `mode` selects optional `*_MODEL_ECONOMY`, `*_MODEL_BALANCED` or `*_MODEL_DEEP` variables, falling back to the default model. `pathStandards` is untrusted review guidance, never authority to run code or access tools. The worker currently uses at most two model calls per review. Large, deleted, generated and binary content is reported as omitted or excluded.
 
-The model receives selected diff hunks, bounded before/after source, path standards, nearby references and the follow-up question if asked. It does not receive repository secrets intentionally. If you configure a hosted provider, that provider receives this code even though the app is self-hosted. Use a local compatible endpoint when inference must stay local. No repository code, package hooks or tests execute during review.
+### Review settings (Greptile-compatible)
+
+A root `greptile.json` is read when there is no `.openreview.yml`, and uses the same key names:
+
+| Key | Effect |
+|---|---|
+| `strictness` (1-3) | Minimum severity to comment: 1 = low, 2 = medium, 3 = high. Overrides `severityThreshold`. |
+| `commentTypes` | Which of `logic`, `syntax`, `style`, `info` may be posted. Default `[logic, syntax]`. |
+| `instructions` | Free-text context for the reviewer (untrusted guidance). |
+| `rules` | `[{id, rule, scope, severity}]`. Findings cite the rule id; a rule's severity sets the comment's severity. `pathStandards` still works and becomes scoped rules. |
+| `disabledRules` | Rule ids to turn off, typically in a nested config. |
+| `ignorePatterns` | Newline-separated gitignore-style patterns, added to `ignore`. |
+| `triggerOnUpdates` | `false` stops automatic re-reviews on new commits (commands still work). |
+| `minConfidence` (1-5) | Drop verified findings the verifier rates below this. Default 3. |
+| `summarySection`, `issuesTable`, `confidenceScore`, `sequenceDiagram` | `{included, collapsible, defaultOpen}` for each part of the summary comment. |
+| `prDescription.enabled` | Fill an empty PR description from the summary. Never overwrites existing text. |
+
+Nested `.openreview.yml` or `greptile.json` files in subdirectories apply to files below them. They can set `strictness`, `commentTypes`, `instructions`, `rules`, `disabledRules` and `ignorePatterns`; rule scopes and ignore patterns are relative to that directory. Budgets, modes and limits come from the root file only. `context.repos` is accepted but not used yet.
+
+The summary comment shows an overview, a 0-5 merge confidence score computed from verified findings and coverage, an issues table, a files table and a Mermaid sequence diagram, all produced by the existing two model calls. Inline comments carry the type, the verifier's confidence and, when the fix is small and certain, a GitHub suggestion block.
+
+The model receives selected diff hunks, bounded before/after source, repository rules and instructions, nearby references and the follow-up question if asked. It does not receive repository secrets intentionally. If you configure a hosted provider, that provider receives this code even though the app is self-hosted. Use a local compatible endpoint when inference must stay local. No repository code, package hooks or tests execute during review.
 
 ## Operations
 

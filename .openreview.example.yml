@@ -6,9 +6,32 @@ branches:
 ignore:
   - "**/*.generated.ts"
   - "docs/**"
-pathStandards:
-  "src/auth/**": "Check authorization at the server boundary and trace anonymous callers."
-severityThreshold: medium
+# gitignore-style patterns, one per line (Greptile's ignorePatterns).
+ignorePatterns: |
+  *.snap
+  fixtures/
+# 1 = comment on low severity and up, 2 = medium, 3 = high only.
+strictness: 2
+commentTypes: [logic, syntax]
+instructions: |
+  TypeScript monorepo. Database access goes through src/db; validation uses zod.
+rules:
+  - id: server-auth
+    rule: Check authorization at the server boundary and trace anonymous callers.
+    scope: ["src/auth/**", "src/api/**"]
+    severity: high
+  - id: no-console
+    rule: Use the logger service instead of console.log in production code.
+    scope: ["src/**"]
+    severity: low
+disabledRules: []
+triggerOnUpdates: true
+minConfidence: 3
+summarySection: { included: true, collapsible: false, defaultOpen: true }
+issuesTable: { included: true, collapsible: false, defaultOpen: true }
+confidenceScore: { included: true, collapsible: false, defaultOpen: true }
+sequenceDiagram: { included: true, collapsible: true, defaultOpen: false }
+prDescription: { enabled: false }
 commentLimit: 5
 budgetUsd: 1
 context:
