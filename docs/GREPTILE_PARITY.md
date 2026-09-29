@@ -40,7 +40,9 @@ OpenReview (`/home/user/openreview`) is an alpha, self-hostable GitHub PR review
 
 ## Phased roadmap
 
-### Phase 1: Accuracy core (codebase graph)
+### Phase 1: Accuracy core (codebase graph) — implemented
+Status: `packages/indexer` builds the graph per review with a blob-SHA parse cache (worker-local, not Convex: it avoids millions of database writes, and Convex storage is deferred to phase 4, where Q&A and MCP need it). Retrieval recall on the 50-case benchmark is 1.00 vs 0.18 for `git grep`; see `docs/EVALUATION.md`. Still open: a persistent bare mirror for large repos, and a paid-model `eval --repo` run.
+
 - New package `packages/indexer`:
   - `web-tree-sitter` WASM grammars for TS/JS, Python, Go, Java, Rust, Ruby and C#.
   - Extract definitions, references, imports and call sites.

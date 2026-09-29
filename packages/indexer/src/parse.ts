@@ -1,0 +1,46 @@
+import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
+import { LANGUAGES, languageFor, type LanguageId, type LanguageSpec } from './languages.js';
+
+// The package is UMD/CommonJS, so ESM named imports are not available at runtime.
+const require=createRequire(import.meta.url);
+type TreeSitter=typeof import('@vscode/tree-sitter-wasm');
+const TS=require('@vscode/tree-sitter-wasm') as TreeSitter;
+const wasmDir=dirname(require.resolve('@vscode/tree-sitter-wasm'));
+
+export type DefKind='function'|'method'|'class'|'interface'|'type'|'enum'|'variable';
+export type Definition={name:string;kind:DefKind;startLine:number;endLine:number};
+export type Reference={name:string;line:number};
+export type ParsedFile={language:LanguageId;defs:Definition[];refs:Reference[];imports:string[]};
+
+type Loaded={parser:InstanceType<TreeSitter['Parser']>;defs:InstanceType<TreeSitter['Query']>;refs:InstanceType<TreeSitter['Query']>;imports:InstanceType<TreeSitter['Query']>};
+let ready:Promise<void>|undefined;
+const loaded=new Map<LanguageId,Promise<Loaded>>();
+
+async function load(spec:LanguageSpec):Promise<Loaded>{
+  ready??=TS.Parser.init({locateFile:(file:string)=>join(wasmDir,file)});await ready;
+  const language=await TS.Language.load(join(wasmDir,spec.wasm)),parser=new TS.Parser();parser.setLanguage(language);
+  return {parser,defs:new TS.Query(language,spec.defs),refs:new TS.Query(language,spec.refs),imports:new TS.Query(language,spec.imports)};
+}
+function loader(spec:LanguageSpec){let p=loaded.get(spec.id);if(!p){p=load(spec);loaded.set(spec.id,p)}return p}
+export async function warmLanguages(ids:LanguageId[]=LANGUAGES.map(l=>l.id)){await Promise.all(LANGUAGES.filter(l=>ids.includes(l.id)).map(loader))}
+
+const unquote=(s:string)=>s.replace(/^["'<`]|["'>`]$/g,'');
+// Parses one file into definitions, references and import specifiers. Returns undefined for unsupported files.
+export async function parseSource(path:string,source:string):Promise<ParsedFile|undefined>{
+  const spec=languageFor(path);if(!spec)return undefined;const l=await loader(spec);const tree=l.parser.parse(source);if(!tree)return undefined;
+  try{
+    const root=tree.rootNode,defs:Definition[]=[],seen=new Set<string>();
+    for(const m of l.defs.matches(root)){const def=m.captures.find(c=>c.name.startsWith('def.')),name=m.captures.find(c=>c.name==='name');if(!def||!name)continue;
+      let kind=def.name.slice(4) as DefKind;const node=def.node;
+      if(kind==='variable'){const value=node.childForFieldName('value');if(value&&/function|arrow/.test(value.type))kind='function'}
+      if(kind==='function'&&spec.id==='python'&&node.parent?.parent?.type==='class_definition')kind='method';
+      const key=`${name.node.text}:${node.startPosition.row}`;if(seen.has(key))continue;seen.add(key);
+      defs.push({name:name.node.text.replace(/^.*::/,''),kind,startLine:node.startPosition.row+1,endLine:node.endPosition.row+1})}
+    const defLines=new Set(defs.map(d=>`${d.name}:${d.startLine}`)),refs:Reference[]=[],refSeen=new Set<string>();
+    for(const c of l.refs.captures(root)){if(c.name!=='ref')continue;const name=c.node.text,line=c.node.startPosition.row+1,key=`${name}:${line}`;
+      if(refSeen.has(key)||defLines.has(key))continue;refSeen.add(key);refs.push({name,line})}
+    const imports=[...new Set(l.imports.captures(root).filter(c=>c.name==='source').map(c=>unquote(c.node.text)))];
+    return {language:spec.id,defs,refs,imports};
+  }finally{tree.delete()}
+}

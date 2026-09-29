@@ -14,6 +14,9 @@ services:
       context: .
       dockerfile: Dockerfile.worker
     env_file: .env
+    environment:
+      # Parsed-file cache keyed by blob SHA; later reviews only parse changed files.
+      OPENREVIEW_INDEX_CACHE: /tmp/openreview-index
     restart: unless-stopped
     read_only: true
     tmpfs:
